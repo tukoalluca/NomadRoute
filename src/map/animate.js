@@ -15,15 +15,15 @@ const MODE_ICONS = {
     teleport: '🌀'
 };
 
-// Camera config per mode - Zooming out significantly for smoother feel
+// Target Camera Config (ideal state, but overridable by user interaction)
 const MODE_ZOOMS = {
-    walk: 14.5,
-    bike: 13.5,
-    car: 11,
-    bus: 11,
-    train: 10,
-    plane: 3,     // Very zoomed out
-    teleport: 9
+    walk: 15,
+    bike: 14,
+    car: 12,
+    bus: 12,
+    train: 11,
+    plane: 3,
+    teleport: 10
 };
 
 const MODE_PITCH = {
@@ -70,14 +70,13 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
     marker.setLngLat(currentCoords);
     onLegStart(0);
 
-    // Initial Camera Move
+    // Initial Camera Move (Start of journey - force set)
     map.flyTo({
         center: currentCoords,
         zoom: MODE_ZOOMS[currentMode] || 11,
         pitch: MODE_PITCH[currentMode] || 40,
         bearing: 0,
-        speed: 1.5,
-        curve: 1
+        speed: 1.5
     });
 
     let activeTrailCoords = [currentCoords];
@@ -99,8 +98,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
             legIndex++;
             if (legIndex >= journey.length) {
                 stopAnimation();
-                // Final view
-                map.flyTo({ zoom: 4, pitch: 0, bearing: 0 }); // Reset to globe view
+                map.flyTo({ zoom: 3, pitch: 0, bearing: 0 });
                 if (onComplete) onComplete();
                 return;
             }
@@ -125,6 +123,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
         const speed = MODE_SPEEDS[currentMode] || 1;
 
         if (dist <= 0.0001) {
+            // instant skip duplicate points
             pointIndex++;
             progress = 0;
             animationFrameId = requestAnimationFrame(frame);
@@ -150,15 +149,53 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
 
         marker.setLngLat(currentPos);
 
-        // --- Camera Tracking ---
-        // jumpTo is smoothest for rigid tracking.
-        // Reduced zoom will help masking jitter.
-        map.jumpTo({
-            center: currentPos,
-            zoom: MODE_ZOOMS[currentMode] || 11,
-            pitch: MODE_PITCH[currentMode] || 35,
-            bearing: 0
-        });
+        // --- Camera Tracking Logic ---
+        // Requirement: Always follow icon (center).
+        // Requirement: Allow user to scroll/zoom (don't force zoom if interacting).
+        // Requirement: Smooth transition between modes.
+
+        const cameraOptions = {
+            center: currentPos
+        };
+
+        // Check if user is interacting with map controls
+        const isUserInteracting = map.isZooming() || map.isRotating() || map.isMoving() || map.isDragPan();
+        // Note: isMoving() returns true if we are calling jumpTo/flyTo. 
+        // We need 'isUserInteracting' specifically, but Mapbox GL JS doesn't have a single flag.
+        // However, we can check if we are *currently* strictly following our own logic? 
+        // Actually, simpler approach:
+        // We always set CENTER.
+        // We only set ZOOM and PITCH if we think we should drift to it.
+
+        // Let's implement a "Drift to Target" logic.
+        // If the current zoom is significantly different from target, we gently nudge it.
+        // UNLESS the user is actively zooming.
+
+        if (!map.isZooming()) {
+            const currentZoom = map.getZoom();
+            const targetZoom = MODE_ZOOMS[currentMode] || 11;
+
+            // Simple ease towards target (lerp)
+            // 0.02 factor makes it slow and smooth, creating a "drift" effect
+            const newZoom = currentZoom + (targetZoom - currentZoom) * 0.01;
+
+            // Only apply if difference is noteworthy to avoid micro-jitters
+            if (Math.abs(newZoom - currentZoom) > 0.001) {
+                cameraOptions.zoom = newZoom;
+            }
+        }
+
+        if (!map.isRotating()) {
+            const currentPitch = map.getPitch();
+            const targetPitch = MODE_PITCH[currentMode] || 40;
+            const newPitch = currentPitch + (targetPitch - currentPitch) * 0.01;
+
+            if (Math.abs(newPitch - currentPitch) > 0.1) {
+                cameraOptions.pitch = newPitch;
+            }
+        }
+
+        map.jumpTo(cameraOptions);
 
         animationFrameId = requestAnimationFrame(frame);
     }

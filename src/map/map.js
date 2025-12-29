@@ -10,7 +10,7 @@ export function initMap(containerId, token) {
 
     const map = new mapboxgl.Map({
         container: containerId,
-        style: 'mapbox://styles/mapbox/dark-v11', // Nice dark mode for trails
+        style: 'mapbox://styles/mapbox/outdoors-v12', // Outdoors style
         center: [100.5018, 13.7563], // Default Bangkok
         zoom: 4,
         projection: 'globe' // 3D globe effect
