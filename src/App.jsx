@@ -69,14 +69,25 @@ const MODES = [
     { value: 'walk', label: 'Walk 🚶' },
     { value: 'train', label: 'Train 🚆' },
     { value: 'plane', label: 'Plane ✈️' },
+    { value: 'teleport', label: 'Teleport 🌀' }
 ];
+
+const MODE_ICONS = {
+    car: '🚗',
+    bike: '🚲',
+    walk: '🚶',
+    train: '🚆',
+    plane: '✈️',
+    teleport: '🌀'
+};
 
 export default function App() {
     // Map State
     const mapContainer = useRef(null);
     const mapInstance = useRef(null);
-    const markerRef = useRef(null);
+    const markerRef = useRef(null); // The moving animation marker
     const markerElRef = useRef(null);
+    const staticMarkersRef = useRef([]); // Markers for start and stops
 
     // Data State
     const [startPlace, setStartPlace] = useState(null);
@@ -93,7 +104,7 @@ export default function App() {
         const map = initMap(mapContainer.current, MAPBOX_TOKEN);
         mapInstance.current = map;
 
-        // Create customizable marker
+        // Create customizable marker for animation
         const el = document.createElement('div');
         el.className = 'marker-icon';
         el.innerText = '📍';
@@ -103,12 +114,78 @@ export default function App() {
             .setLngLat([100.5, 13.7]) // Init somewhere
             .addTo(map);
 
-        // Hide initially until playing
+        // Hide moving marker initially
         el.style.display = 'none';
         markerRef.current = marker;
 
-        return () => map.remove();
+        return () => {
+            map.remove();
+            mapInstance.current = null;
+        };
     }, []);
+
+    // Effect: Update Static Markers when locations change
+    useEffect(() => {
+        if (!mapInstance.current) return;
+
+        // Clear existing static markers
+        staticMarkersRef.current.forEach(m => m.remove());
+        staticMarkersRef.current = [];
+
+        const boundsPoints = [];
+
+        // Add Start Marker (Green)
+        if (startPlace && startPlace.center) {
+            const el = document.createElement('div');
+            el.className = 'marker-static start';
+            // Use basic style if no css class
+            el.innerHTML = '<div style="background-color: #4caf50; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center;">⛳</div>';
+            
+            const m = new mapboxgl.Marker({ element: el, anchor: 'center' })
+                .setLngLat(startPlace.center)
+                .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Start: ' + startPlace.name))
+                .addTo(mapInstance.current);
+            
+            staticMarkersRef.current.push(m);
+            boundsPoints.push(startPlace.center);
+        }
+
+        // Add Stop Markers (Red)
+        stops.forEach((stop, idx) => {
+            if (stop.place && stop.place.center) {
+                const el = document.createElement('div');
+                el.className = 'marker-static stop';
+                el.innerHTML = '<div style="background-color: #ff5252; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center;">📍</div>';
+
+                const m = new mapboxgl.Marker({ element: el, anchor: 'center' })
+                    .setLngLat(stop.place.center)
+                    .setPopup(new mapboxgl.Popup({ offset: 25 }).setText(`Stop ${idx + 1}: ${stop.place.name}`))
+                    .addTo(mapInstance.current);
+
+                staticMarkersRef.current.push(m);
+                boundsPoints.push(stop.place.center);
+            }
+        });
+
+        // Optional: Auto-fit bounds (with debouncing or check if user interacted? 
+        // For now, let's fit if not animating to give feedback)
+        if (!isAnimating && boundsPoints.length > 0) {
+            try {
+                // If only 1 point, flyTo
+                if (boundsPoints.length === 1) {
+                    mapInstance.current.flyTo({ center: boundsPoints[0], zoom: 10, speed: 1.5 });
+                } else {
+                    const bounds = getBounds(boundsPoints);
+                    if (bounds) {
+                        mapInstance.current.fitBounds(bounds, { padding: 100, maxZoom: 12, duration: 1500 });
+                    }
+                }
+            } catch (err) {
+                console.warn("FitBounds error", err);
+            }
+        }
+
+    }, [startPlace, stops, isAnimating]);
 
     const addStop = () => {
         if (stops.length >= 10) return;
@@ -139,6 +216,7 @@ export default function App() {
     };
 
     const handlePlay = async () => {
+        if (isAnimating) return; // Prevention
         // Validation
         if (!startPlace) {
             alert('Please select a Start location.');
@@ -154,7 +232,7 @@ export default function App() {
         setStatusMessage('Calculating route...');
         stopAnimation();
 
-        // Clear Map
+        // Clear Map Layers
         updateActiveTrail(mapInstance.current, []);
         updateCompletedTrail(mapInstance.current, []);
 
@@ -172,16 +250,17 @@ export default function App() {
 
                 if (mode === 'plane') {
                     points = getGreatCircleArc(prevCoords, targetCoords, 100);
+                } else if (mode === 'teleport') {
+                    points = [prevCoords, targetCoords];
                 } else {
                     // API Call
-                    // Map mode to API profile
                     const profileMap = {
                         car: 'driving',
-                        train: 'driving', // Simulation
+                        train: 'driving', 
                         bike: 'cycling',
                         walk: 'walking'
                     };
-                    points = await getDirections(profileMap[mode], prevCoords, targetCoords, MAPBOX_TOKEN);
+                    points = await getDirections(profileMap[mode] || 'driving', prevCoords, targetCoords, MAPBOX_TOKEN);
                 }
 
                 journey.push({
@@ -275,22 +354,24 @@ export default function App() {
                     ))}
                 </div>
 
-                <button onClick={addStop} disabled={stops.length >= 10}>
-                    + Add Stop
-                </button>
-
-                <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
-                    <button
-                        className="btn-primary"
-                        style={{ flex: 1 }}
-                        onClick={handlePlay}
-                        disabled={isAnimating}
-                    >
-                        {isAnimating ? 'Playing...' : '▶ Play Journey'}
+                <div className="controls">
+                    <button onClick={addStop} disabled={stops.length >= 10}>
+                        + Add Stop
                     </button>
-                    <button onClick={handleClear} disabled={isAnimating}>
-                        Clear
-                    </button>
+                    
+                    <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
+                        <button
+                            className="btn-primary"
+                            style={{ flex: 1 }}
+                            onClick={handlePlay}
+                            disabled={isAnimating}
+                        >
+                            {isAnimating ? 'Playing...' : '▶ Play Journey'}
+                        </button>
+                        <button onClick={handleClear} disabled={isAnimating}>
+                            Clear
+                        </button>
+                    </div>
                 </div>
 
                 {statusMessage && (
@@ -305,7 +386,7 @@ export default function App() {
                         <div className="leg-item">🏁 Start: {startPlace.name}</div>
                         {stops.map((stop, i) => stop.place && (
                             <div key={stop.id} className="leg-item">
-                                ⬇ {MODE_ICONS[stop.mode] || stop.mode} to {stop.place.name}
+                                ⬇ {MODE_ICONS[stop.mode] || '🚗'} to {stop.place.name}
                             </div>
                         ))}
                     </div>
