@@ -172,6 +172,15 @@ function SettingsPanel({ isOpen, onClose, settings, onUpdate }) {
     );
 }
 
+function CinematicOverlay({ label, visible }) {
+    return (
+        <div className={`cinematic-overlay ${visible ? 'visible' : ''}`}>
+            <h2>{label}</h2>
+            <span>Arriving</span>
+        </div>
+    );
+}
+
 // --- Main App ---
 
 export default function App() {
@@ -188,6 +197,10 @@ export default function App() {
     const [isAnimating, setIsAnimating] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Cinematic State
+    const [cinematicLabel, setCinematicLabel] = useState('');
+    const [isLabelVisible, setIsLabelVisible] = useState(false);
 
     // Settings State
     const [settings, setSettings] = useState({
@@ -229,8 +242,6 @@ export default function App() {
     // Effect: Update Map Colors
     useEffect(() => {
         if (mapInstance.current) {
-            // Need to wait for style load usually, but our initMap handles it.
-            // Just try updating safe-ishly
             try {
                 setLayerColors(
                     mapInstance.current,
@@ -241,14 +252,17 @@ export default function App() {
                 console.warn(e);
             }
         }
-    }, [settings.styles]); // Only re-run when colors change
+    }, [settings.styles]);
 
-    // Effect: Update Static Markers
+    // Effect: Update Static Markers (Hide during animation for clean look?)
     useEffect(() => {
         if (!mapInstance.current) return;
 
         staticMarkersRef.current.forEach(m => m.remove());
         staticMarkersRef.current = [];
+
+        // If animating, simpler to hide prompts, though user might want to see map pins?
+        // Let's keep them for context, but maybe smaller? Standard is fine.
 
         const boundsPoints = [];
 
@@ -386,6 +400,8 @@ export default function App() {
                     mode: mode,
                     from: prevCoords,
                     to: targetCoords,
+                    fromName: i === 0 ? startPlace.name.split(',')[0] : stops[i - 1].place.name.split(',')[0], // Simple short name
+                    toName: stop.place.name.split(',')[0],
                     pathCoords: points
                 });
 
@@ -400,14 +416,20 @@ export default function App() {
                 markerElRef.current,
                 markerRef.current,
                 journey,
-                () => {
+                () => { // onComplete
                     setIsAnimating(false);
                     setStatusMessage('Journey Complete!');
                 },
-                (legIndex) => {
-                    // Start of leg
+                (legIndex) => { }, // onLegStart (Using Director now)
+                settings,
+                // Cinematic Callbacks
+                (text) => {
+                    setCinematicLabel(text);
+                    setIsLabelVisible(true);
                 },
-                settings // Pass dynamic settings
+                () => {
+                    setIsLabelVisible(false);
+                }
             );
 
         } catch (error) {
@@ -419,7 +441,9 @@ export default function App() {
     };
 
     return (
-        <div className="app-container">
+        <div className={`app-container ${isAnimating ? 'cinematic-mode' : ''}`}>
+            <CinematicOverlay label={cinematicLabel} visible={isLabelVisible} />
+
             <SettingsPanel
                 isOpen={isSettingsOpen}
                 onClose={() => setIsSettingsOpen(false)}
