@@ -68,7 +68,8 @@ export async function animateJourney(
     onLegStart,
     settings = {},
     showLabel,
-    hideLabel
+    hideLabel,
+    onError // New callback
 ) {
     stopAnimation();
     const myRunId = currentRunId;
@@ -92,8 +93,6 @@ export async function animateJourney(
         updateActiveTrail(map, []);
         updateCompletedTrail(map, []);
 
-        // Initial Camera Position - Jump to start
-        // Zoom out slightly more than target to allow for a "zoom in" effect during the label reading
         const initialZoom = (modeZooms['car'] || 10);
         map.jumpTo({
             center: firstPoint,
@@ -102,22 +101,20 @@ export async function animateJourney(
             bearing: 0
         });
 
-        // Show Start Label
         if (showLabel && journey[0].fromName) {
             showLabel(journey[0].fromName);
 
-            // Subtle "Wake up" drift while reading label
             map.easeTo({
                 zoom: initialZoom - 1.0,
                 duration: 2000,
                 easing: t => t * (2 - t)
             });
 
-            await wait(1800); // Reduced read time
+            await wait(1800);
             if (currentRunId !== myRunId) return;
 
             if (showLabel) hideLabel();
-            await wait(500); // reduced fade out wait
+            await wait(500);
             if (currentRunId !== myRunId) return;
         }
 
@@ -134,8 +131,6 @@ export async function animateJourney(
 
             markerEl.innerText = MODE_ICONS[mode] || '📍';
 
-            // "Director" Camera Move - Pre-roll
-            // Drift towards the start of the path with intended zoom/pitch
             map.flyTo({
                 center: path[0],
                 zoom: zoomTarget,
@@ -145,10 +140,9 @@ export async function animateJourney(
                 curve: 1.2
             });
 
-            await wait(800); // Shortened settle time
+            await wait(800);
             if (currentRunId !== myRunId) return;
 
-            // --- 3. Execute Leg Animation ---
             await animateLeg(
                 map,
                 marker,
@@ -161,25 +155,22 @@ export async function animateJourney(
 
             if (currentRunId !== myRunId) return;
 
-            // --- 4. Leg Complete ---
             completedLegsCoords.push(path);
             updateActiveTrail(map, []);
             updateCompletedTrail(map, completedLegsCoords);
 
-            // --- 5. Arrival Sequence ---
             const labelText = leg.toName;
 
             if (showLabel) {
                 showLabel(labelText);
 
-                // Drift camera slowly during read to keep it alive
                 map.easeTo({
                     zoom: map.getZoom() + 0.5,
                     duration: 2500,
                     easing: t => t
                 });
 
-                await wait(2000); // Reduced read time
+                await wait(2000);
                 if (currentRunId !== myRunId) return;
 
                 if (showLabel) hideLabel();
@@ -188,33 +179,30 @@ export async function animateJourney(
             }
         }
 
-        // --- 6. Finale ---
         if (onComplete && currentRunId === myRunId) onComplete();
 
     } catch (e) {
         console.error("Cinematic Error", e);
-        if (currentRunId === myRunId) stopAnimation();
+        if (currentRunId === myRunId) {
+            stopAnimation();
+            if (onError) onError(e); // Notify app of failure
+        }
     }
 }
 
-/**
- * Animates a single leg with ease-in/out and camera leading
- */
 function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId) {
     return new Promise((resolve) => {
         let startTime = null;
         let totalDist = 0;
         for (let i = 0; i < path.length - 1; i++) totalDist += getDistance(path[i], path[i + 1]);
 
-        // Safety: If distance is 0, resolve immediately
-        if (totalDist < 0.001) {
+        if (totalDist < 0.001 || speedBase < 0) {
             resolve();
             return;
         }
 
         const REAL_SPEED = speedBase * 0.2;
 
-        // Safety: If speed is 0 or negative
         if (REAL_SPEED <= 0) {
             resolve();
             return;
@@ -230,7 +218,6 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId
         updateActiveTrail(map, activeTrail);
 
         function frame(timestamp) {
-            // Check Run ID directly
             if (currentRunId !== runId) {
                 resolve();
                 return;
@@ -281,7 +268,6 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId
             marker.setLngLat(currentPos);
             updateActiveTrail(map, [...activeTrail, currentPos]);
 
-            // Camera Lead
             const leadPos = lerp(currentPos, p2, 0.3);
 
             map.jumpTo({
