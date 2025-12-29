@@ -109,3 +109,21 @@ export function updateActiveTrail(map, coords) {
         });
     }
 }
+
+/**
+ * Dynamically update layer colors
+ * @param {mapboxgl.Map} map 
+ * @param {string} activeColor 
+ * @param {string} completedColor 
+ */
+export function setLayerColors(map, activeColor, completedColor) {
+    if (!map) return;
+
+    if (map.getLayer(ACTIVE_LAYER)) {
+        map.setPaintProperty(ACTIVE_LAYER, 'line-color', activeColor);
+    }
+
+    if (map.getLayer(COMPLETED_LAYER)) {
+        map.setPaintProperty(COMPLETED_LAYER, 'line-color', completedColor);
+    }
+}

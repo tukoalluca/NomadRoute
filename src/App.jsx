@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
-import { initMap, updateActiveTrail, updateCompletedTrail } from './map/map';
+import { initMap, updateActiveTrail, updateCompletedTrail, setLayerColors } from './map/map';
 import { searchPlaces, getDirections } from './api/mapbox';
 import { getGreatCircleArc, getBounds } from './utils/geo';
 import { animateJourney, stopAnimation } from './map/animate';
@@ -8,13 +8,54 @@ import './styles.css';
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
-// Sub-component for Autocomplete Input
+// --- Data Constants ---
+const MODES = [
+    { value: 'car', label: 'Car 🚗' },
+    { value: 'bus', label: 'Bus 🚌' },
+    { value: 'bike', label: 'Bike 🚲' },
+    { value: 'walk', label: 'Walk 🚶' },
+    { value: 'train', label: 'Train 🚆' },
+    { value: 'plane', label: 'Plane ✈️' },
+    { value: 'teleport', label: 'Teleport 🌀' }
+];
+
+const MODE_ICONS = {
+    car: '🚗',
+    bus: '🚌',
+    bike: '🚲',
+    walk: '🚶',
+    train: '🚆',
+    plane: '✈️',
+    teleport: '🌀'
+};
+
+const DEFAULT_ZOOMS = {
+    walk: 13,
+    bike: 12,
+    car: 10,
+    bus: 10,
+    train: 9,
+    plane: 3,
+    teleport: 9
+};
+
+const DEFAULT_SPEEDS = {
+    walk: 0.1,
+    bike: 0.3,
+    car: 0.8,
+    bus: 0.6,
+    train: 1.0,
+    plane: 8.0,
+    teleport: 100.0
+};
+
+// --- Sub-Components ---
+
 function LocationInput({ label, value, onSelect, placeholder }) {
     const [query, setQuery] = useState(value ? value.name : '');
     const [suggestions, setSuggestions] = useState([]);
     const [isOpen, setIsOpen] = useState(false);
 
-    // Update local state if parent updates value
     useEffect(() => {
         if (value) setQuery(value.name);
     }, [value]);
@@ -63,39 +104,100 @@ function LocationInput({ label, value, onSelect, placeholder }) {
     );
 }
 
-const MODES = [
-    { value: 'car', label: 'Car 🚗' },
-    { value: 'bus', label: 'Bus 🚌' },
-    { value: 'bike', label: 'Bike 🚲' },
-    { value: 'walk', label: 'Walk 🚶' },
-    { value: 'train', label: 'Train 🚆' },
-    { value: 'plane', label: 'Plane ✈️' },
-    { value: 'teleport', label: 'Teleport 🌀' }
-];
+function SettingsPanel({ isOpen, onClose, settings, onUpdate }) {
+    if (!isOpen) return null;
 
-const MODE_ICONS = {
-    car: '🚗',
-    bus: '🚌',
-    bike: '🚲',
-    walk: '🚶',
-    train: '🚆',
-    plane: '✈️',
-    teleport: '🌀'
-};
+    return (
+        <div className="settings-overlay">
+            <div className="settings-panel">
+                <div className="settings-header">
+                    <h2>⚙️ Settings</h2>
+                    <button onClick={onClose} className="close-btn">✕</button>
+                </div>
+
+                <div className="settings-content">
+                    {/* Style Section */}
+                    <h3>🎨 Visuals</h3>
+                    <div className="setting-row">
+                        <label>Active Trail Color</label>
+                        <input
+                            type="color"
+                            value={settings.styles.activeColor}
+                            onChange={e => onUpdate('styles', 'activeColor', e.target.value)}
+                        />
+                    </div>
+                    <div className="setting-row">
+                        <label>Completed Trail Color</label>
+                        <input
+                            type="color"
+                            value={settings.styles.completedColor}
+                            onChange={e => onUpdate('styles', 'completedColor', e.target.value)}
+                        />
+                    </div>
+
+                    <hr />
+
+                    {/* Speed Section */}
+                    <h3>🚀 Speed Multipliers</h3>
+                    {MODES.map(m => (
+                        <div key={m.value} className="setting-row">
+                            <label>{m.label}</label>
+                            <input
+                                type="range" min="0.1" max="5.0" step="0.1"
+                                value={settings.speeds[m.value] || DEFAULT_SPEEDS[m.value] || 1}
+                                onChange={e => onUpdate('speeds', m.value, parseFloat(e.target.value))}
+                            />
+                            <span>x{settings.speeds[m.value] || DEFAULT_SPEEDS[m.value]}</span>
+                        </div>
+                    ))}
+
+                    <hr />
+
+                    {/* Zoom Section */}
+                    <h3>🔍 Default Zooms</h3>
+                    {MODES.map(m => (
+                        <div key={m.value} className="setting-row">
+                            <label>{m.label}</label>
+                            <input
+                                type="range" min="2" max="18" step="0.5"
+                                value={settings.zooms[m.value] || DEFAULT_ZOOMS[m.value] || 10}
+                                onChange={e => onUpdate('zooms', m.value, parseFloat(e.target.value))}
+                            />
+                            <span>{settings.zooms[m.value] || DEFAULT_ZOOMS[m.value]}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// --- Main App ---
 
 export default function App() {
     // Map State
     const mapContainer = useRef(null);
     const mapInstance = useRef(null);
-    const markerRef = useRef(null); // The moving animation marker
+    const markerRef = useRef(null);
     const markerElRef = useRef(null);
-    const staticMarkersRef = useRef([]); // Markers for start and stops
+    const staticMarkersRef = useRef([]);
 
-    // Data State
+    // Logic State
     const [startPlace, setStartPlace] = useState(null);
     const [stops, setStops] = useState([{ id: Date.now(), place: null, mode: 'car' }]);
     const [isAnimating, setIsAnimating] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // Settings State
+    const [settings, setSettings] = useState({
+        zooms: { ...DEFAULT_ZOOMS },
+        speeds: { ...DEFAULT_SPEEDS },
+        styles: {
+            activeColor: '#4caf50',
+            completedColor: '#555555'
+        }
+    });
 
     useEffect(() => {
         if (!process.env.VITE_MAPBOX_TOKEN && !MAPBOX_TOKEN) {
@@ -106,17 +208,15 @@ export default function App() {
         const map = initMap(mapContainer.current, MAPBOX_TOKEN);
         mapInstance.current = map;
 
-        // Create customizable marker for animation
         const el = document.createElement('div');
         el.className = 'marker-icon';
         el.innerText = '📍';
         markerElRef.current = el;
 
         const marker = new mapboxgl.Marker(el)
-            .setLngLat([100.5, 13.7]) // Init somewhere
+            .setLngLat([100.5, 13.7])
             .addTo(map);
 
-        // Hide moving marker initially
         el.style.display = 'none';
         markerRef.current = marker;
 
@@ -126,17 +226,32 @@ export default function App() {
         };
     }, []);
 
-    // Effect: Update Static Markers when locations change
+    // Effect: Update Map Colors
+    useEffect(() => {
+        if (mapInstance.current) {
+            // Need to wait for style load usually, but our initMap handles it.
+            // Just try updating safe-ishly
+            try {
+                setLayerColors(
+                    mapInstance.current,
+                    settings.styles.activeColor,
+                    settings.styles.completedColor
+                );
+            } catch (e) {
+                console.warn(e);
+            }
+        }
+    }, [settings.styles]); // Only re-run when colors change
+
+    // Effect: Update Static Markers
     useEffect(() => {
         if (!mapInstance.current) return;
 
-        // Clear existing static markers
         staticMarkersRef.current.forEach(m => m.remove());
         staticMarkersRef.current = [];
 
         const boundsPoints = [];
 
-        // Add Start Marker (Green)
         if (startPlace && startPlace.center) {
             const el = document.createElement('div');
             el.className = 'marker-static start';
@@ -151,7 +266,6 @@ export default function App() {
             boundsPoints.push(startPlace.center);
         }
 
-        // Add Stop Markers (Red)
         stops.forEach((stop, idx) => {
             if (stop.place && stop.place.center) {
                 const el = document.createElement('div');
@@ -168,11 +282,10 @@ export default function App() {
             }
         });
 
-        // Optional: Auto-fit bounds
         if (!isAnimating && boundsPoints.length > 0) {
             try {
                 if (boundsPoints.length === 1) {
-                    mapInstance.current.flyTo({ center: boundsPoints[0], zoom: 10, speed: 1.5 });
+                    mapInstance.current.flyTo({ center: boundsPoints[0], zoom: settings.zooms['car'] || 10, speed: 1.5 });
                 } else {
                     const bounds = getBounds(boundsPoints);
                     if (bounds) {
@@ -185,6 +298,16 @@ export default function App() {
         }
 
     }, [startPlace, stops, isAnimating]);
+
+    const handleSettingsUpdate = (category, key, value) => {
+        setSettings(prev => ({
+            ...prev,
+            [category]: {
+                ...prev[category],
+                [key]: value
+            }
+        }));
+    };
 
     const addStop = () => {
         if (stops.length >= 10) return;
@@ -249,10 +372,9 @@ export default function App() {
                 } else if (mode === 'teleport') {
                     points = [prevCoords, targetCoords];
                 } else {
-                    // API Call
                     const profileMap = {
                         car: 'driving',
-                        bus: 'driving', // Bus uses driving profile
+                        bus: 'driving',
                         train: 'driving',
                         bike: 'cycling',
                         walk: 'walking'
@@ -270,7 +392,6 @@ export default function App() {
                 prevCoords = targetCoords;
             }
 
-            // Start Animation
             setStatusMessage('Animating...');
             if (markerElRef.current) markerElRef.current.style.display = 'block';
 
@@ -284,8 +405,9 @@ export default function App() {
                     setStatusMessage('Journey Complete!');
                 },
                 (legIndex) => {
-                    // Leg start
-                }
+                    // Start of leg
+                },
+                settings // Pass dynamic settings
             );
 
         } catch (error) {
@@ -298,8 +420,24 @@ export default function App() {
 
     return (
         <div className="app-container">
+            <SettingsPanel
+                isOpen={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+                settings={settings}
+                onUpdate={handleSettingsUpdate}
+            />
+
             <div className="sidebar">
-                <h1>NomadRoute 🌍</h1>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h1>NomadRoute 🌍</h1>
+                    <button
+                        className="settings-btn"
+                        onClick={() => setIsSettingsOpen(true)}
+                        title="Settings"
+                    >
+                        ⚙️
+                    </button>
+                </div>
 
                 <LocationInput
                     label="Start Location"

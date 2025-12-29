@@ -15,14 +15,14 @@ const MODE_ICONS = {
     teleport: '🌀'
 };
 
-// Target Camera Config - Even more zoomed out
-const MODE_ZOOMS = {
-    walk: 13,    // Was 14.5
-    bike: 12,    // Was 13.5
-    car: 10,     // Was 11 - nice regional view
-    bus: 10,     // Same as car
-    train: 9,    // Was 10
-    plane: 3,    // Globe view
+// Target Camera Config Defaults
+const DEFAULT_MODE_ZOOMS = {
+    walk: 13,
+    bike: 12,
+    car: 10,
+    bus: 10,
+    train: 9,
+    plane: 3,
     teleport: 9
 };
 
@@ -36,7 +36,7 @@ const MODE_PITCH = {
     teleport: 40
 };
 
-const MODE_SPEEDS = {
+const DEFAULT_MODE_SPEEDS = {
     walk: 0.1,
     bike: 0.3,
     car: 0.8,
@@ -53,8 +53,21 @@ export function stopAnimation() {
     }
 }
 
-export function animateJourney(map, markerEl, marker, journey, onComplete, onLegStart) {
+/**
+ * Animate Journey with configurable settings
+ * @param {mapboxgl.Map} map 
+ * @param {HTMLElement} markerEl 
+ * @param {mapboxgl.Marker} marker 
+ * @param {Array} journey 
+ * @param {Function} onComplete 
+ * @param {Function} onLegStart 
+ * @param {Object} settings { zooms: {}, speeds: {} }
+ */
+export function animateJourney(map, markerEl, marker, journey, onComplete, onLegStart, settings = {}) {
     stopAnimation();
+
+    const modeZooms = { ...DEFAULT_MODE_ZOOMS, ...settings.zooms };
+    const modeSpeeds = { ...DEFAULT_MODE_SPEEDS, ...settings.speeds };
 
     let legIndex = 0;
     let pointIndex = 0;
@@ -81,7 +94,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
         // Initial Camera Set
         map.flyTo({
             center: currentCoords,
-            zoom: MODE_ZOOMS[currentMode] || 10,
+            zoom: modeZooms[currentMode] || 10,
             pitch: MODE_PITCH[currentMode] || 40,
             bearing: 0,
             speed: 1.5
@@ -136,12 +149,10 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
                     activeTrailCoords = [currentLegPath[0]];
                     updateActiveTrail(map, activeTrailCoords);
 
-                    // On leg switch, we DO want to gently encourage the new zoom level
-                    // because the transport mode changed (e.g. Car -> Plane).
-                    // We can do a one-off flyTo here to bridge the modes.
+                    // On leg switch, bridge zoom
                     map.flyTo({
                         center: p2 || currentLegPath[0],
-                        zoom: MODE_ZOOMS[currentMode] || 10,
+                        zoom: modeZooms[currentMode] || 10,
                         pitch: MODE_PITCH[currentMode] || 40,
                         speed: 0.8, // Gentle transition
                         curve: 1
@@ -159,7 +170,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
                     continue;
                 }
 
-                const speed = MODE_SPEEDS[currentMode] || 1;
+                const speed = modeSpeeds[currentMode] || 1;
                 const DEMO_SPEED_MULTIPLIER = 0.5;
                 const fractionStep = (speed * DEMO_SPEED_MULTIPLIER) / dist;
 
@@ -176,10 +187,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
                     updateActiveTrail(map, [...activeTrailCoords, currentPos]);
 
                     marker.setLngLat(currentPos);
-
-                    // Update Camera: strictly tracking center, NO zoom drift
                     updateCamera(map, currentPos, currentMode);
-
                     break;
                 }
             }
@@ -206,11 +214,6 @@ function updateCamera(map, center, mode) {
         center: center
     };
 
-    // REMOVED: Automatic zoom drift logic.
-    // We now respect the user's manual zoom. 
-    // The zoom is only set initially at the start of a leg.
-
-    // We still maintain pitch drift because pitch is less "personal" and helps scene framing
     if (!map.isRotating()) {
         const currentPitch = map.getPitch();
         const targetPitch = MODE_PITCH[mode] || 40;
