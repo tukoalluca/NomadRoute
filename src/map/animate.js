@@ -47,7 +47,6 @@ const DEFAULT_MODE_SPEEDS = {
 };
 
 export function stopAnimation() {
-    // Increment run ID so any pending async tasks (waits/loops) from previous runs will fail their checks
     currentRunId++;
     if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
@@ -55,13 +54,7 @@ export function stopAnimation() {
     }
 }
 
-// --- Cinematic Helpers ---
-
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-function easeInOutQuad(t) {
-    return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-}
 
 /**
  * Animate Journey with "Cinematic Director" Logic
@@ -78,7 +71,7 @@ export async function animateJourney(
     hideLabel
 ) {
     stopAnimation();
-    const myRunId = currentRunId; // Capture the ID for this specific run
+    const myRunId = currentRunId;
 
     const modeZooms = { ...DEFAULT_MODE_ZOOMS, ...settings.zooms };
     const modeSpeeds = { ...DEFAULT_MODE_SPEEDS, ...settings.speeds };
@@ -99,10 +92,12 @@ export async function animateJourney(
         updateActiveTrail(map, []);
         updateCompletedTrail(map, []);
 
-        // Initial Camera Position (Slightly further out for context)
+        // Initial Camera Position - Jump to start
+        // Zoom out slightly more than target to allow for a "zoom in" effect during the label reading
+        const initialZoom = (modeZooms['car'] || 10);
         map.jumpTo({
             center: firstPoint,
-            zoom: (modeZooms['car'] || 10) - 1,
+            zoom: initialZoom - 1.5,
             pitch: 0,
             bearing: 0
         });
@@ -110,12 +105,20 @@ export async function animateJourney(
         // Show Start Label
         if (showLabel && journey[0].fromName) {
             showLabel(journey[0].fromName);
-            await wait(2500);
-            if (currentRunId !== myRunId) return; // Zombie Check
+
+            // Subtle "Wake up" drift while reading label
+            map.easeTo({
+                zoom: initialZoom - 1.0,
+                duration: 2000,
+                easing: t => t * (2 - t)
+            });
+
+            await wait(1800); // Reduced read time
+            if (currentRunId !== myRunId) return;
 
             if (showLabel) hideLabel();
-            await wait(800);
-            if (currentRunId !== myRunId) return; // Zombie Check
+            await wait(500); // reduced fade out wait
+            if (currentRunId !== myRunId) return;
         }
 
         // --- 2. Iterate Legs ---
@@ -131,7 +134,8 @@ export async function animateJourney(
 
             markerEl.innerText = MODE_ICONS[mode] || '📍';
 
-            // "Director" Camera Move
+            // "Director" Camera Move - Pre-roll
+            // Drift towards the start of the path with intended zoom/pitch
             map.flyTo({
                 center: path[0],
                 zoom: zoomTarget,
@@ -141,8 +145,8 @@ export async function animateJourney(
                 curve: 1.2
             });
 
-            await wait(1000);
-            if (currentRunId !== myRunId) return; // Zombie Check after wait
+            await wait(800); // Shortened settle time
+            if (currentRunId !== myRunId) return;
 
             // --- 3. Execute Leg Animation ---
             await animateLeg(
@@ -152,7 +156,7 @@ export async function animateJourney(
                 speedBase,
                 zoomTarget,
                 pitchTarget,
-                myRunId // Pass ID to leg for frame-level checks
+                myRunId
             );
 
             if (currentRunId !== myRunId) return;
@@ -167,11 +171,19 @@ export async function animateJourney(
 
             if (showLabel) {
                 showLabel(labelText);
-                await wait(3000);
+
+                // Drift camera slowly during read to keep it alive
+                map.easeTo({
+                    zoom: map.getZoom() + 0.5,
+                    duration: 2500,
+                    easing: t => t
+                });
+
+                await wait(2000); // Reduced read time
                 if (currentRunId !== myRunId) return;
 
                 if (showLabel) hideLabel();
-                await wait(1000);
+                await wait(800);
                 if (currentRunId !== myRunId) return;
             }
         }
@@ -181,7 +193,6 @@ export async function animateJourney(
 
     } catch (e) {
         console.error("Cinematic Error", e);
-        // Only stop if we are still the active run (to avoid messing up a newer run)
         if (currentRunId === myRunId) stopAnimation();
     }
 }
@@ -195,7 +206,19 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId
         let totalDist = 0;
         for (let i = 0; i < path.length - 1; i++) totalDist += getDistance(path[i], path[i + 1]);
 
+        // Safety: If distance is 0, resolve immediately
+        if (totalDist < 0.001) {
+            resolve();
+            return;
+        }
+
         const REAL_SPEED = speedBase * 0.2;
+
+        // Safety: If speed is 0 or negative
+        if (REAL_SPEED <= 0) {
+            resolve();
+            return;
+        }
 
         let distanceCovered = 0;
         let currentPathIdx = 0;
@@ -209,7 +232,7 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId
         function frame(timestamp) {
             // Check Run ID directly
             if (currentRunId !== runId) {
-                resolve(); // Kill this promise
+                resolve();
                 return;
             }
 
@@ -258,6 +281,7 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId
             marker.setLngLat(currentPos);
             updateActiveTrail(map, [...activeTrail, currentPos]);
 
+            // Camera Lead
             const leadPos = lerp(currentPos, p2, 0.3);
 
             map.jumpTo({

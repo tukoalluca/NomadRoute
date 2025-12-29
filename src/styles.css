@@ -29,7 +29,9 @@ body,
   flex-direction: column;
   z-index: 100;
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
-  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.6s ease;
+  transition: margin-left 0.8s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.6s ease;
+  flex-shrink: 0;
+  /* Prevent shrinking when open */
 }
 
 .map-container {
@@ -291,7 +293,8 @@ h2 {
 
 /* Cinematic Mode */
 .app-container.cinematic-mode .sidebar {
-  transform: translateX(-100%);
+  /* Hide by pulling margin left equal to width + padding approx */
+  margin-left: -360px;
   opacity: 0;
 }
 
