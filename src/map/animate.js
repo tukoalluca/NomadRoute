@@ -15,15 +15,15 @@ const MODE_ICONS = {
     teleport: '🌀'
 };
 
-// Target Camera Config
+// Target Camera Config - Even more zoomed out
 const MODE_ZOOMS = {
-    walk: 15,
-    bike: 14,
-    car: 12,
-    bus: 12,
-    train: 11,
-    plane: 3,
-    teleport: 10
+    walk: 13,    // Was 14.5
+    bike: 12,    // Was 13.5
+    car: 10,     // Was 11 - nice regional view
+    bus: 10,     // Same as car
+    train: 9,    // Was 10
+    plane: 3,    // Globe view
+    teleport: 9
 };
 
 const MODE_PITCH = {
@@ -78,9 +78,10 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
         marker.setLngLat(currentCoords);
         onLegStart(0);
 
+        // Initial Camera Set
         map.flyTo({
             center: currentCoords,
-            zoom: MODE_ZOOMS[currentMode] || 11,
+            zoom: MODE_ZOOMS[currentMode] || 10,
             pitch: MODE_PITCH[currentMode] || 40,
             bearing: 0,
             speed: 1.5
@@ -98,8 +99,6 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
         }
 
         try {
-            // Processing loop: we might skip multiple tiny points in one frame to prevent "stuck" visual
-            // But we limit it to avoid freezing the main thread (e.g. max 10 skips)
             let movesProcessed = 0;
             const MAX_SKIPS = 20;
 
@@ -122,10 +121,8 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
 
                     // Next Leg
                     if (!journey[legIndex].pathCoords || journey[legIndex].pathCoords.length === 0) {
-                        // Skip empty leg?
                         console.warn("Skipping empty leg", legIndex);
                         legIndex++;
-                        // Loop continues to check next leg
                         continue;
                     }
 
@@ -139,19 +136,27 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
                     activeTrailCoords = [currentLegPath[0]];
                     updateActiveTrail(map, activeTrailCoords);
 
-                    // Break loop to render this state
+                    // On leg switch, we DO want to gently encourage the new zoom level
+                    // because the transport mode changed (e.g. Car -> Plane).
+                    // We can do a one-off flyTo here to bridge the modes.
+                    map.flyTo({
+                        center: p2 || currentLegPath[0],
+                        zoom: MODE_ZOOMS[currentMode] || 10,
+                        pitch: MODE_PITCH[currentMode] || 40,
+                        speed: 0.8, // Gentle transition
+                        curve: 1
+                    });
+
                     break;
                 }
 
-                // Distance Check
-                const dist = getDistance(p1, p2); // km
+                const dist = getDistance(p1, p2);
 
-                // If point is duplicate or extremely close, skip instantly
-                if (dist <= 0.0005) { // Increased threshold slightly
+                if (dist <= 0.0005) {
                     pointIndex++;
                     progress = 0;
                     movesProcessed++;
-                    continue; // Retry logic with next point immediately
+                    continue;
                 }
 
                 const speed = MODE_SPEEDS[currentMode] || 1;
@@ -161,47 +166,32 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
                 progress += fractionStep;
 
                 if (progress >= 1) {
-                    // Reached p2, move to next point
                     pointIndex++;
-                    progress = 0; // Reset progress for next segment
+                    progress = 0;
                     activeTrailCoords.push(p2);
                     updateActiveTrail(map, activeTrailCoords);
-
-                    // Since we completed a segment, we 'moved'. 
-                    // We *could* continue processing if we covered it instantly, but for animation smoothness
-                    // it's usually better to render at p2.
-                    // However, if fractionStep was massive (e.g. > 2.0), we skipped a lot.
-                    // For now, let's break to render p2.
                     break;
                 } else {
-                    // Interpolating
                     const currentPos = lerp(p1, p2, progress);
-                    // Update active trail optimization: 
-                    // To avoid creating massive arrays every frame, we could just optimize the setData call
-                    // But here we just append the interpolated point
                     updateActiveTrail(map, [...activeTrailCoords, currentPos]);
 
                     marker.setLngLat(currentPos);
+
+                    // Update Camera: strictly tracking center, NO zoom drift
                     updateCamera(map, currentPos, currentMode);
 
-                    // Done for this frame
                     break;
                 }
             }
 
-            // If we broke out of loop because we reached destination, update marker/camera one last time in this frame check
-            if (pointIndex < currentLegPath.length) {
+            if (pointIndex < currentLegPath.length && progress === 0) {
                 const finalP = currentLegPath[pointIndex];
-                // Should we force set marker? Only if we are sitting at a point (progress 0)
-                if (progress === 0) {
-                    marker.setLngLat(finalP);
-                    updateCamera(map, finalP, currentMode);
-                }
+                marker.setLngLat(finalP);
+                updateCamera(map, finalP, currentMode);
             }
 
         } catch (err) {
             console.error("Animation Loop Error", err);
-            // Emergency stop to avoid infinite error loop
             stopAnimation();
         }
 
@@ -216,16 +206,11 @@ function updateCamera(map, center, mode) {
         center: center
     };
 
-    // "Drift to Target" logic
-    if (!map.isZooming()) {
-        const currentZoom = map.getZoom();
-        const targetZoom = MODE_ZOOMS[mode] || 11;
-        const newZoom = currentZoom + (targetZoom - currentZoom) * 0.01;
-        if (Math.abs(newZoom - currentZoom) > 0.001) {
-            cameraOptions.zoom = newZoom;
-        }
-    }
+    // REMOVED: Automatic zoom drift logic.
+    // We now respect the user's manual zoom. 
+    // The zoom is only set initially at the start of a leg.
 
+    // We still maintain pitch drift because pitch is less "personal" and helps scene framing
     if (!map.isRotating()) {
         const currentPitch = map.getPitch();
         const targetPitch = MODE_PITCH[mode] || 40;
