@@ -65,6 +65,7 @@ function LocationInput({ label, value, onSelect, placeholder }) {
 
 const MODES = [
     { value: 'car', label: 'Car 🚗' },
+    { value: 'bus', label: 'Bus 🚌' },
     { value: 'bike', label: 'Bike 🚲' },
     { value: 'walk', label: 'Walk 🚶' },
     { value: 'train', label: 'Train 🚆' },
@@ -74,6 +75,7 @@ const MODES = [
 
 const MODE_ICONS = {
     car: '🚗',
+    bus: '🚌',
     bike: '🚲',
     walk: '🚶',
     train: '🚆',
@@ -138,14 +140,13 @@ export default function App() {
         if (startPlace && startPlace.center) {
             const el = document.createElement('div');
             el.className = 'marker-static start';
-            // Use basic style if no css class
             el.innerHTML = '<div style="background-color: #4caf50; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center;">⛳</div>';
-            
+
             const m = new mapboxgl.Marker({ element: el, anchor: 'center' })
                 .setLngLat(startPlace.center)
                 .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Start: ' + startPlace.name))
                 .addTo(mapInstance.current);
-            
+
             staticMarkersRef.current.push(m);
             boundsPoints.push(startPlace.center);
         }
@@ -167,11 +168,9 @@ export default function App() {
             }
         });
 
-        // Optional: Auto-fit bounds (with debouncing or check if user interacted? 
-        // For now, let's fit if not animating to give feedback)
+        // Optional: Auto-fit bounds
         if (!isAnimating && boundsPoints.length > 0) {
             try {
-                // If only 1 point, flyTo
                 if (boundsPoints.length === 1) {
                     mapInstance.current.flyTo({ center: boundsPoints[0], zoom: 10, speed: 1.5 });
                 } else {
@@ -207,7 +206,6 @@ export default function App() {
         setStops([{ id: Date.now(), place: null, mode: 'car' }]);
         setStatusMessage('');
 
-        // Clear map layers
         if (mapInstance.current) {
             updateActiveTrail(mapInstance.current, []);
             updateCompletedTrail(mapInstance.current, []);
@@ -216,8 +214,8 @@ export default function App() {
     };
 
     const handlePlay = async () => {
-        if (isAnimating) return; // Prevention
-        // Validation
+        if (isAnimating) return;
+
         if (!startPlace) {
             alert('Please select a Start location.');
             return;
@@ -232,7 +230,6 @@ export default function App() {
         setStatusMessage('Calculating route...');
         stopAnimation();
 
-        // Clear Map Layers
         updateActiveTrail(mapInstance.current, []);
         updateCompletedTrail(mapInstance.current, []);
 
@@ -240,7 +237,6 @@ export default function App() {
             const journey = [];
             let prevCoords = startPlace.center;
 
-            // Build Journey Segments
             for (let i = 0; i < validStops.length; i++) {
                 const stop = validStops[i];
                 const mode = stop.mode;
@@ -256,7 +252,8 @@ export default function App() {
                     // API Call
                     const profileMap = {
                         car: 'driving',
-                        train: 'driving', 
+                        bus: 'driving', // Bus uses driving profile
+                        train: 'driving',
                         bike: 'cycling',
                         walk: 'walking'
                     };
@@ -273,13 +270,6 @@ export default function App() {
                 prevCoords = targetCoords;
             }
 
-            // Fit Bounds
-            const allPoints = journey.flatMap(leg => leg.pathCoords);
-            const bounds = getBounds(allPoints);
-            if (bounds) {
-                mapInstance.current.fitBounds(bounds, { padding: 50 });
-            }
-
             // Start Animation
             setStatusMessage('Animating...');
             if (markerElRef.current) markerElRef.current.style.display = 'block';
@@ -294,7 +284,7 @@ export default function App() {
                     setStatusMessage('Journey Complete!');
                 },
                 (legIndex) => {
-                    // Optional: update UI active leg indicator
+                    // Leg start
                 }
             );
 
@@ -308,11 +298,9 @@ export default function App() {
 
     return (
         <div className="app-container">
-            {/* Left Panel */}
             <div className="sidebar">
                 <h1>NomadRoute 🌍</h1>
 
-                {/* Start Input */}
                 <LocationInput
                     label="Start Location"
                     placeholder="Where to start?"
@@ -358,7 +346,7 @@ export default function App() {
                     <button onClick={addStop} disabled={stops.length >= 10}>
                         + Add Stop
                     </button>
-                    
+
                     <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem' }}>
                         <button
                             className="btn-primary"
@@ -380,7 +368,6 @@ export default function App() {
                     </div>
                 )}
 
-                {/* Summary Text */}
                 {startPlace && stops[0].place && (
                     <div className="journey-summary">
                         <div className="leg-item">🏁 Start: {startPlace.name}</div>
@@ -393,7 +380,6 @@ export default function App() {
                 )}
             </div>
 
-            {/* Right Map */}
             <div id="map-container" ref={mapContainer} className="map-container"></div>
         </div>
     );

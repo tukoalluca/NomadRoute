@@ -9,13 +9,43 @@ const MODE_ICONS = {
     walk: '🚶',
     bike: '🚲',
     car: '🚗',
+    bus: '🚌',
     train: '🚆',
-    plane: '✈️'
+    plane: '✈️',
+    teleport: '🌀'
 };
 
-/**
- * Stop any running animation
- */
+// Camera config per mode
+const MODE_ZOOMS = {
+    walk: 16,
+    bike: 15,
+    car: 14,
+    bus: 14,
+    train: 13,
+    plane: 4,     // Zoom out for planet view
+    teleport: 10
+};
+
+const MODE_PITCH = {
+    walk: 60,
+    bike: 55,
+    car: 50,
+    bus: 50,
+    train: 45,
+    plane: 0,    // Top down for plane
+    teleport: 60
+};
+
+const MODE_SPEEDS = {
+    walk: 0.1,
+    bike: 0.3,
+    car: 0.8,
+    bus: 0.6,
+    train: 1.0,
+    plane: 8.0,
+    teleport: 100.0
+};
+
 export function stopAnimation() {
     if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
@@ -23,54 +53,15 @@ export function stopAnimation() {
     }
 }
 
-/**
- * Main animation function
- * @param {mapboxgl.Map} map 
- * @param {HTMLElement} markerEl 
- * @param {mapboxgl.Marker} marker 
- * @param {Array} journey structure: [{ pathCoords: [[lng,lat],...], mode: 'car', ... }]
- * @param {Function} onComplete 
- * @param {Function} onLegStart (legIndex) => void
- */
 export function animateJourney(map, markerEl, marker, journey, onComplete, onLegStart) {
     stopAnimation();
 
     let legIndex = 0;
     let pointIndex = 0;
-    let progress = 0; // 0 to 1 between current point and next point
-    let completedLegsCoords = []; // Array of arrays
+    let progress = 0;
+    let completedLegsCoords = [];
 
-    // Speed factor: meters per frame roughly
-    // We want a constant visual speed.
-    // Real distance varies. We can just use a fixed step size in coordinate space or km.
-    // Let's use a fixed speed in km/frame.
-    const SPEED_KM_PER_FRAME = 0.05; // Adjustable, maybe scale by zoom level? 
-    // Actually, "constant speed feel" usually implies constant screen pixels, but 
-    // constant geographic speed is easier. Let's try constant geographic.
-    // Issue: Plane leg might be 1000km, Walk 1km. If constant speed, Walk is instant or Plane takes forever.
-    // Solution: Adaptive speed based on leg total distance? 
-    // Or just fixed "duration" per leg? No, user said "constant speed feel".
-    // A simplified approach: move X% of the leg per frame? No, that's variable speed.
-    // Let's stick to moving a fixed distance per frame, but clamp it reasonable.
-    // For MVP: simply iterate through points. If points are dense (Directions API), one point per frame is slow.
-    // Directions API returns dense points. 
-    // We will traverse the path array.
-
-    // Better approach for smooth animation:
-    // Track current position along the path. 
-    // Target speed: e.g. 500km/h for plane, 100km/h car... 
-    // Or just make everything fast enough to not be boring.
-    // Let's use a "Base Speed" and vary slightly by mode?
-    // User said "constant speed feel (approx)".
-
-    const MODE_SPEEDS = {
-        walk: 0.1,
-        bike: 0.2,
-        car: 0.8,
-        train: 0.8,
-        plane: 5.0
-    };
-
+    // Setup initial state
     let currentLegPath = journey[0].pathCoords;
     let currentMode = journey[0].mode;
     let currentCoords = currentLegPath[0];
@@ -79,7 +70,16 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
     marker.setLngLat(currentCoords);
     onLegStart(0);
 
-    // Prepare active trail
+    // Initial Camera Move
+    map.flyTo({
+        center: currentCoords,
+        zoom: MODE_ZOOMS[currentMode] || 12,
+        pitch: MODE_PITCH[currentMode] || 40,
+        bearing: 0,
+        speed: 1.5,
+        curve: 1
+    });
+
     let activeTrailCoords = [currentCoords];
 
     function frame() {
@@ -88,24 +88,24 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
             return;
         }
 
-        // 1. Determine next target point
         const p1 = currentLegPath[pointIndex];
         const p2 = currentLegPath[pointIndex + 1];
 
+        // End of Leg Check
         if (!p2) {
-            // End of leg
             completedLegsCoords.push(currentLegPath);
             updateCompletedTrail(map, completedLegsCoords);
 
             legIndex++;
             if (legIndex >= journey.length) {
-                // Done
                 stopAnimation();
+                // Final view
+                map.flyTo({ zoom: 4, pitch: 0, bearing: 0 }); // Reset to globe view
                 if (onComplete) onComplete();
                 return;
             }
 
-            // Next leg setup
+            // Next Leg
             currentLegPath = journey[legIndex].pathCoords;
             currentMode = journey[legIndex].mode;
             markerEl.innerText = MODE_ICONS[currentMode] || '📍';
@@ -113,17 +113,21 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
 
             pointIndex = 0;
             progress = 0;
-            activeTrailCoords = [currentLegPath[0]]; // Reset active trail
+            activeTrailCoords = [currentLegPath[0]];
             updateActiveTrail(map, activeTrailCoords);
+
+            // Optional: Smoothly fly camera to new mode style if drastically different? 
+            // For now, the jumpTo in loop handles it, but a flyTo transition between legs might be nice if distant.
+            // But usually legs connect. 
 
             animationFrameId = requestAnimationFrame(frame);
             return;
         }
 
+        // Movement Logic
         const dist = getDistance(p1, p2); // km
         const speed = MODE_SPEEDS[currentMode] || 1;
 
-        // If dist is 0 (duplicate points), skip
         if (dist <= 0.0001) {
             pointIndex++;
             progress = 0;
@@ -131,48 +135,34 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
             return;
         }
 
-        // Calculate step size (ratio of segment)
-        const step = speed / (dist * 100); // Scaling factor to make it look good
-        // *100 is just a magic number to tune the global speed. 1 km is long.
-        // Let's try simpler logic: Move fixed distance.
-
-        progress += (speed * 0.02); // Just advance progress manually?
-        // No, need checks.
-
-        // Let's just traverse points if they are dense enough?
-        // Mapbox directions are usually dense. Plane arc we generate is controllable.
-        // Let's assume points are approx equidistant or we don't care about perfect constant speed.
-        // We will interpolate between p1 and p2.
-
-        // Calculate dynamic step based on distance to keep SPEED constant-ish
-        // We want to cover 'speed' km per frame.
-        // Segment length is 'dist' km.
-        // Step fraction should be (speed / dist).
-
-        // Adjust speed multiplier for "demo" feel (not real-time obviously)
         const DEMO_SPEED_MULTIPLIER = 0.5;
         const fractionStep = (speed * DEMO_SPEED_MULTIPLIER) / dist;
 
         progress += fractionStep;
 
+        let currentPos;
         if (progress >= 1) {
-            // Reached p2
             pointIndex++;
             progress = 0;
+            currentPos = p2;
             activeTrailCoords.push(p2);
-            marker.setLngLat(p2);
             updateActiveTrail(map, activeTrailCoords);
         } else {
-            // Interpolate
-            const nextPos = lerp(p1, p2, progress);
-            marker.setLngLat(nextPos);
-            // Optional: add intermediate points to trail for smoothness? 
-            // GeoJSON line string handles two points fine.
-            // But we want the trail to grow smoothly. 
-            // So we update the LAST point of activeTrailCoords to be `nextPos`
-            // But we shouldn't mute the array that holds verified points.
-            updateActiveTrail(map, [...activeTrailCoords, nextPos]);
+            currentPos = lerp(p1, p2, progress);
+            updateActiveTrail(map, [...activeTrailCoords, currentPos]);
         }
+
+        marker.setLngLat(currentPos);
+
+        // --- Camera Tracking ---
+        // Smoothly follow the marker
+        // jumpTo is efficient for per-frame updates.
+        map.jumpTo({
+            center: currentPos,
+            zoom: MODE_ZOOMS[currentMode] || 12,
+            pitch: MODE_PITCH[currentMode] || 40,
+            bearing: 0 // Could animate bearing to follow path direction if we calculated it
+        });
 
         animationFrameId = requestAnimationFrame(frame);
     }
