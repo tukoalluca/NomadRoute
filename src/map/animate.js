@@ -2,8 +2,7 @@ import { updateActiveTrail, updateCompletedTrail } from './map';
 import { getDistance, lerp, getBearing } from '../utils/geo';
 
 let animationFrameId = null;
-let isPaused = false;
-let stopRequested = false;
+let currentRunId = 0; // Unique ID for the active playback session
 
 // Icons mapping
 const MODE_ICONS = {
@@ -48,7 +47,8 @@ const DEFAULT_MODE_SPEEDS = {
 };
 
 export function stopAnimation() {
-    stopRequested = true;
+    // Increment run ID so any pending async tasks (waits/loops) from previous runs will fail their checks
+    currentRunId++;
     if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
@@ -78,7 +78,7 @@ export async function animateJourney(
     hideLabel
 ) {
     stopAnimation();
-    stopRequested = false;
+    const myRunId = currentRunId; // Capture the ID for this specific run
 
     const modeZooms = { ...DEFAULT_MODE_ZOOMS, ...settings.zooms };
     const modeSpeeds = { ...DEFAULT_MODE_SPEEDS, ...settings.speeds };
@@ -93,7 +93,6 @@ export async function animateJourney(
 
     try {
         // --- 1. Opening Sequence ---
-        // Start at first point
         const firstPoint = journey[0].pathCoords[0];
         markerEl.innerText = MODE_ICONS[journey[0].mode] || '📍';
         marker.setLngLat(firstPoint);
@@ -111,15 +110,18 @@ export async function animateJourney(
         // Show Start Label
         if (showLabel && journey[0].fromName) {
             showLabel(journey[0].fromName);
-            await wait(2500); // Read time
-            if (showLabel) hideLabel();
-            await wait(800); // Fade out time
-        }
+            await wait(2500);
+            if (currentRunId !== myRunId) return; // Zombie Check
 
-        if (stopRequested) return;
+            if (showLabel) hideLabel();
+            await wait(800);
+            if (currentRunId !== myRunId) return; // Zombie Check
+        }
 
         // --- 2. Iterate Legs ---
         for (let i = 0; i < journey.length; i++) {
+            if (currentRunId !== myRunId) return;
+
             const leg = journey[i];
             const path = leg.pathCoords;
             const mode = leg.mode;
@@ -127,11 +129,9 @@ export async function animateJourney(
             const zoomTarget = modeZooms[mode] || 10;
             const pitchTarget = MODE_PITCH[mode] || 40;
 
-            // Transition Camera for Start of Leg
             markerEl.innerText = MODE_ICONS[mode] || '📍';
 
-            // "Director" Camera Move: Focus on the path
-            // We ease into the leg.
+            // "Director" Camera Move
             map.flyTo({
                 center: path[0],
                 zoom: zoomTarget,
@@ -141,10 +141,10 @@ export async function animateJourney(
                 curve: 1.2
             });
 
-            await wait(1000); // Pause for camera to settle and viewer to anticipate
+            await wait(1000);
+            if (currentRunId !== myRunId) return; // Zombie Check after wait
 
             // --- 3. Execute Leg Animation ---
-            // We use a custom Promise-based animation loop for this leg
             await animateLeg(
                 map,
                 marker,
@@ -152,58 +152,50 @@ export async function animateJourney(
                 speedBase,
                 zoomTarget,
                 pitchTarget,
-                completedLegsCoords
+                myRunId // Pass ID to leg for frame-level checks
             );
 
-            if (stopRequested) return;
+            if (currentRunId !== myRunId) return;
 
             // --- 4. Leg Complete ---
             completedLegsCoords.push(path);
-            updateActiveTrail(map, []); // Clear active
-            updateCompletedTrail(map, completedLegsCoords); // Commit to gray
+            updateActiveTrail(map, []);
+            updateCompletedTrail(map, completedLegsCoords);
 
             // --- 5. Arrival Sequence ---
-            // Decelerate is handled by ease-out in animateLeg roughly, but we pause here.
-
-            // Show Destination Label
-            // Check if this is the final destination or just a stop
-            const isFinal = i === journey.length - 1;
             const labelText = leg.toName;
 
             if (showLabel) {
                 showLabel(labelText);
-                await wait(3000); // Read time
+                await wait(3000);
+                if (currentRunId !== myRunId) return;
+
                 if (showLabel) hideLabel();
                 await wait(1000);
+                if (currentRunId !== myRunId) return;
             }
         }
 
         // --- 6. Finale ---
-        if (onComplete) onComplete();
+        if (onComplete && currentRunId === myRunId) onComplete();
 
     } catch (e) {
         console.error("Cinematic Error", e);
-        stopAnimation();
+        // Only stop if we are still the active run (to avoid messing up a newer run)
+        if (currentRunId === myRunId) stopAnimation();
     }
 }
 
 /**
  * Animates a single leg with ease-in/out and camera leading
  */
-function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previousTrails) {
+function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, runId) {
     return new Promise((resolve) => {
         let startTime = null;
-        // Calculate total distance to estimate duration
         let totalDist = 0;
         for (let i = 0; i < path.length - 1; i++) totalDist += getDistance(path[i], path[i + 1]);
 
-        // Heuristic duration: dist / speed
-        // Speed multiplier needs calibration. 
-        // 1.0 speed ~= 1000km / 5s? 
-        // Let's say speed 1 = 200km/s (very fast for car)
-        // Adjust:
-        const REAL_SPEED = speedBase * 0.2; // km per frame roughly
-        // We can't strictly predict duration frame by frame, so we use distance progress.
+        const REAL_SPEED = speedBase * 0.2;
 
         let distanceCovered = 0;
         let currentPathIdx = 0;
@@ -215,31 +207,27 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previ
         updateActiveTrail(map, activeTrail);
 
         function frame(timestamp) {
-            if (stopRequested) {
-                resolve();
+            // Check Run ID directly
+            if (currentRunId !== runId) {
+                resolve(); // Kill this promise
                 return;
             }
+
             if (!startTime) startTime = timestamp;
 
-            // Calculate Easing Factor based on total progress
             const progressRatio = totalDist > 0 ? distanceCovered / totalDist : 1;
 
-            // Ease In at 0-10%, Ease Out at 90-100%
             let easeFactor = 1;
             if (progressRatio < 0.1) easeFactor = lerp(0.1, 1, progressRatio * 10);
             if (progressRatio > 0.9) easeFactor = lerp(1, 0.1, (progressRatio - 0.9) * 10);
 
-            // Move
             const moveDist = (REAL_SPEED * easeFactor);
 
-            // Advance
             if (getDistance(p1, p2) <= 0.0001) {
-                // Skip tiny segment
                 currentPathIdx++;
             } else {
                 const segDist = getDistance(p1, p2);
                 const segStep = moveDist / segDist;
-
                 segmentProgress += segStep;
             }
 
@@ -248,7 +236,6 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previ
                 currentPathIdx++;
                 activeTrail.push(p2);
                 if (currentPathIdx >= path.length - 1) {
-                    // Leg Done
                     marker.setLngLat(path[path.length - 1]);
                     updateActiveTrail(map, path);
                     resolve();
@@ -256,15 +243,9 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previ
                 }
                 p1 = path[currentPathIdx];
                 p2 = path[currentPathIdx + 1];
-
-                // Recalculate segment distance for next loop to be accurate?
-                // For simplicity, we assume next frame catches it.
-                // But we must update distanceCovered
                 distanceCovered += getDistance(path[currentPathIdx - 1], p1);
             }
 
-            // Interpolate
-            // Safe check
             if (currentPathIdx >= path.length - 1) {
                 resolve();
                 return;
@@ -275,28 +256,7 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previ
 
             const currentPos = lerp(p1, p2, segmentProgress);
             marker.setLngLat(currentPos);
-
-            // Update Active Trail (visually grow it)
-            // Perf: don't update every single frame if too heavy? Mapbox handles it well usually.
-            // To smooth it:
             updateActiveTrail(map, [...activeTrail, currentPos]);
-
-            // --- Camera Leading ---
-            // Look ahead: find a point roughly "Zoom / 2" distance ahead?
-            // Or just P2?
-            // Let's lead by a small fixed ratio of the screen.
-            // Using logic: Center = Lerp(Current, Target, 0.X)
-            // A simple lead is to center the camera on a point slightly ahead of the marker.
-
-            // Let's try to project ahead.
-            // bearing from p1 to p2
-            // We just center on currentPos for now but use JumpTo to avoid lag
-            // User requested: "Not perfectly centered" -> "Keep it slightly behind center"
-            // Actually, "Keep [marker] slightly behind center to create forward motion" means Camera Center is AHEAD of Marker.
-
-            // Simple approach: Camera Center = lerp(currentPos, p2, 0.3)
-            // This pulls the camera towards the destination of the segment. 
-            // If segment is long, it looks far ahead.
 
             const leadPos = lerp(currentPos, p2, 0.3);
 
@@ -304,7 +264,7 @@ function animateLeg(map, marker, path, speedBase, targetZoom, targetPitch, previ
                 center: leadPos,
                 zoom: targetZoom,
                 pitch: targetPitch,
-                bearing: 0 // Keep north up for stability, or rotate? User said "Calm", so 0 is best.
+                bearing: 0
             });
 
             animationFrameId = requestAnimationFrame(frame);
