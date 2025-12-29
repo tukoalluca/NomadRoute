@@ -15,25 +15,25 @@ const MODE_ICONS = {
     teleport: '🌀'
 };
 
-// Camera config per mode
+// Camera config per mode - Zooming out significantly for smoother feel
 const MODE_ZOOMS = {
-    walk: 16,
-    bike: 15,
-    car: 14,
-    bus: 14,
-    train: 13,
-    plane: 4,     // Zoom out for planet view
-    teleport: 10
+    walk: 14.5,
+    bike: 13.5,
+    car: 11,
+    bus: 11,
+    train: 10,
+    plane: 3,     // Very zoomed out
+    teleport: 9
 };
 
 const MODE_PITCH = {
-    walk: 60,
-    bike: 55,
-    car: 50,
-    bus: 50,
-    train: 45,
-    plane: 0,    // Top down for plane
-    teleport: 60
+    walk: 50,
+    bike: 45,
+    car: 40,
+    bus: 40,
+    train: 35,
+    plane: 0,
+    teleport: 40
 };
 
 const MODE_SPEEDS = {
@@ -73,7 +73,7 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
     // Initial Camera Move
     map.flyTo({
         center: currentCoords,
-        zoom: MODE_ZOOMS[currentMode] || 12,
+        zoom: MODE_ZOOMS[currentMode] || 11,
         pitch: MODE_PITCH[currentMode] || 40,
         bearing: 0,
         speed: 1.5,
@@ -116,10 +116,6 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
             activeTrailCoords = [currentLegPath[0]];
             updateActiveTrail(map, activeTrailCoords);
 
-            // Optional: Smoothly fly camera to new mode style if drastically different? 
-            // For now, the jumpTo in loop handles it, but a flyTo transition between legs might be nice if distant.
-            // But usually legs connect. 
-
             animationFrameId = requestAnimationFrame(frame);
             return;
         }
@@ -155,13 +151,13 @@ export function animateJourney(map, markerEl, marker, journey, onComplete, onLeg
         marker.setLngLat(currentPos);
 
         // --- Camera Tracking ---
-        // Smoothly follow the marker
-        // jumpTo is efficient for per-frame updates.
+        // jumpTo is smoothest for rigid tracking.
+        // Reduced zoom will help masking jitter.
         map.jumpTo({
             center: currentPos,
-            zoom: MODE_ZOOMS[currentMode] || 12,
-            pitch: MODE_PITCH[currentMode] || 40,
-            bearing: 0 // Could animate bearing to follow path direction if we calculated it
+            zoom: MODE_ZOOMS[currentMode] || 11,
+            pitch: MODE_PITCH[currentMode] || 35,
+            bearing: 0
         });
 
         animationFrameId = requestAnimationFrame(frame);
